@@ -743,7 +743,7 @@ class Trainer:
             edge_weight = torch.zeros(1, dtype=self.torch_dtype)
             node_degree = torch.zeros(1, dtype=self.torch_dtype)
             effective_nodes_local = torch.zeros(1, dtype=self.torch_dtype)
-            effective_nodes = torch.tensor(n_nodes_local, dtype=self.torch_dtype)
+            effective_nodes = n_nodes_local
 
         self.data_reduced.n_nodes_local = torch.tensor(n_nodes_local, dtype=torch.int64)
         self.data_reduced.n_nodes_halo = torch.tensor(n_nodes_halo, dtype=torch.int64)
@@ -965,12 +965,18 @@ class Trainer:
         elif self.cfg.online and self.cfg.client.backend == 'adios':
             iter = 5 if self.cfg.target_loss != 0 else 1
             for i in range(iter):
-                data_x_i, data_y_i, ttime = self.client.get_train_data_from_stream()
+                data_x_i, data_y_i, ttime, stream_step, stream_slack, stream_compute, stream_total = self.client.get_train_data_from_stream()
                 self.online_timers['trainDataTime'].append(ttime)
                 self.online_timers['trainDataSize'].append((data_x_i.nbytes+data_y_i.nbytes)/GB_SIZE)
                 self.online_timers['trainDataThroughput'].append(
                             self.online_timers['trainDataSize'][-1]/(ttime)
                 )
+                self.online_timers['streamStep'].append(stream_step)
+                self.online_timers['streamSlack'].append(stream_slack)
+                self.online_timers['streamCompute'].append(stream_compute)
+                self.online_timers['streamTotal'].append(stream_total)
+                if self.rank == 0:
+                    log.info(f'[STREAM] step={stream_step} compute={stream_compute:.4g} sec slack={stream_slack:.4g} sec total={stream_total:.4g} sec')
                 data_x_i = self.prepare_snapshot_data(data_x_i)
                 data_y_i = self.prepare_snapshot_data(data_y_i)
                 self.data_list.append(
@@ -1215,18 +1221,24 @@ class Trainer:
                     data_y_i = self.prepare_snapshot_data(data_y_i)
                     self.data_list.append({'x': data_x_i, 'y': data_y_i})
         elif self.cfg.client.backend == 'adios':
-            data_x_i, data_y_i, ttime = self.client.get_train_data_from_stream()
+            data_x_i, data_y_i, ttime, stream_step, stream_slack, stream_compute, stream_total = self.client.get_train_data_from_stream()
             self.online_timers['trainDataTime'].append(ttime)
             self.online_timers['trainDataSize'].append((data_x_i.nbytes+data_y_i.nbytes)/GB_SIZE)
             self.online_timers['trainDataThroughput'].append(
                         self.online_timers['trainDataSize'][-1]/(ttime)
             )
+            self.online_timers['streamStep'].append(stream_step)
+            self.online_timers['streamSlack'].append(stream_slack)
+            self.online_timers['streamCompute'].append(stream_compute)
+            self.online_timers['streamTotal'].append(stream_total)
             data_x_i = self.prepare_snapshot_data(data_x_i)
             data_y_i = self.prepare_snapshot_data(data_y_i)
             self.data_list.append(
                     {'x': data_x_i, 'y':data_y_i}
             )
-            if self.rank == 0: log.info(f'[RANK {self.rank}]: Found 1 new sample to read, will update dataloader')
+            if self.rank == 0:
+                log.info(f'[RANK {self.rank}]: Found 1 new sample to read, will update dataloader')
+                log.info(f'[STREAM] step={stream_step} compute={stream_compute:.4g} sec slack={stream_slack:.4g} sec total={stream_total:.4g} sec')
         
         data = {'train': [], 'validation': []}
         data['train'] = list(self.data_list)
@@ -1276,6 +1288,10 @@ class Trainer:
         timers['trainDataTime'] = []
         timers['trainDataSize'] = []
         timers['trainDataThroughput'] = []
+        timers['streamStep'] = []
+        timers['streamSlack'] = []
+        timers['streamCompute'] = []
+        timers['streamTotal'] = []
         return timers
 
     def update_timer(self, key: str, tstep: int, time: float):
